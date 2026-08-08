@@ -1,0 +1,19 @@
+#!/bin/bash
+# Load the LaunchAgent into the active GUI session so Inertia starts immediately
+# (it also auto-loads at every login because it lives in /Library/LaunchAgents).
+set -e
+PLIST="/Library/LaunchAgents/com.inertia.Inertia.plist"
+chown root:wheel "$PLIST"
+chmod 644 "$PLIST"
+user=$(stat -f%Su /dev/console)
+uid=$(id -u "$user" 2>/dev/null || echo "")
+if [ -n "$uid" ] && [ "$user" != "root" ] && [ "$user" != "loginwindow" ]; then
+    launchctl bootout "gui/$uid" "$PLIST" 2>/dev/null || true
+    # bootout only stops the agent-launched job; a manually-launched copy survives it and would win
+    # the single-instance race, leaving the OLD version running after an upgrade. Kill it and wait
+    # briefly so the freshly bootstrapped copy doesn't see it mid-exit and quit itself.
+    pkill -x Inertia 2>/dev/null || true
+    for _ in $(seq 1 20); do pgrep -x Inertia >/dev/null 2>&1 || break; sleep 0.1; done
+    launchctl bootstrap "gui/$uid" "$PLIST" 2>/dev/null || true
+fi
+exit 0
