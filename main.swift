@@ -7,7 +7,7 @@ import ApplicationServices
 import QuartzCore
 
 // ---- fixed tunables ----
-let COAST_HZ    = 120.0   // self-test simulation rate; the live coast is vsync-paced (see coastTick)
+let COAST_HZ    = 120.0   // self-test simulation rate only; the live coast is vsync-paced (see coastTick)
 
 // ---- user-adjustable knobs (persisted in UserDefaults). No numbers: tune by feel. ----
 // Label and storage key both name the quantity itself; the hover hint carries the plain-language gloss.
@@ -155,6 +155,8 @@ func massFactor(_ size: CGSize) -> Double {
     return min(max(pow(area / 800_000, 0.4), 0.7), 1.6)   // ~1.0 for a typical window; small→0.7, huge→1.6
 }
 
+// precondition() drops its message under -O, so a failed check would exit 133 with no text. Print, then fail.
+func check(_ ok: Bool, _ msg: @autoclosure () -> String) { if !ok { print("selftest FAILED: \(msg())"); exit(1) } }
 func runSelfTest() {
     let bounds = CGRect(x: 0, y: 0, width: 1000, height: 1000)
     let size = CGSize(width: 200, height: 150)
@@ -164,67 +166,67 @@ func runSelfTest() {
     var stopped = false
     for _ in 0..<Int(COAST_HZ * 5) {
         (p, v) = coastStep(pos: p, vel: v, size: size, bounds: bounds, dt: dt, tau: 0.22, restitution: 0.35)
-        precondition(p.x >= bounds.minX && p.x <= bounds.maxX - size.width, "x escaped: \(p.x)")
-        precondition(p.y >= bounds.minY && p.y <= bounds.maxY - size.height, "y escaped: \(p.y)")
+        check(p.x >= bounds.minX && p.x <= bounds.maxX - size.width, "x escaped: \(p.x)")
+        check(p.y >= bounds.minY && p.y <= bounds.maxY - size.height, "y escaped: \(p.y)")
         if hypot(v.dx, v.dy) < 40.0 { stopped = true; break }
     }
-    precondition(stopped, "did not converge")
+    check(stopped, "did not converge")
     // 2) bounce flips velocity at the right edge
     let atEdge = CGPoint(x: bounds.maxX - size.width - 1, y: 500)
     let (_, vb) = coastStep(pos: atEdge, vel: CGVector(dx: 5000, dy: 0), size: size, bounds: bounds, dt: dt, tau: 0.22, restitution: 0.35)
-    precondition(vb.dx < 0, "right-edge bounce did not reverse dx: \(vb.dx)")
+    check(vb.dx < 0, "right-edge bounce did not reverse dx: \(vb.dx)")
     // 3) mass: monotonic in area, clamped, ~1.0 at the reference size
-    precondition(massFactor(CGSize(width: 400, height: 300)) == 0.7, "small window should floor at 0.7")
-    precondition(massFactor(CGSize(width: 3000, height: 2000)) == 1.6, "huge window should cap at 1.6")
-    let m = massFactor(CGSize(width: 1100, height: 730)); precondition(m > 0.95 && m < 1.05, "ref ≈ 1.0, got \(m)")
+    check(massFactor(CGSize(width: 400, height: 300)) == 0.7, "small window should floor at 0.7")
+    check(massFactor(CGSize(width: 3000, height: 2000)) == 1.6, "huge window should cap at 1.6")
+    let m = massFactor(CGSize(width: 1100, height: 730)); check(m > 0.95 && m < 1.05, "ref ≈ 1.0, got \(m)")
     // 4) window taller than the bounds: pinned at minY (no min/max clamp fight), x still in range
     let tall = CGSize(width: 800, height: 1200)
     p = CGPoint(x: 100, y: 0); v = CGVector(dx: 800, dy: 900)
     for _ in 0..<Int(COAST_HZ * 3) {
         (p, v) = coastStep(pos: p, vel: v, size: tall, bounds: bounds, dt: dt, tau: 0.22, restitution: 0.35)
-        precondition(p.y == bounds.minY, "oversized window should pin at minY, got \(p.y)")
-        precondition(p.x >= bounds.minX && p.x <= bounds.maxX - tall.width, "x escaped: \(p.x)")
+        check(p.y == bounds.minY, "oversized window should pin at minY, got \(p.y)")
+        check(p.x >= bounds.minX && p.x <= bounds.maxX - tall.width, "x escaped: \(p.x)")
     }
     // 5) knob() clamps corrupt defaults to the knob's range (restores the user's value after)
     let saved = UserDefaults.standard.object(forKey: "glideTime")
     UserDefaults.standard.set(-5.0, forKey: "glideTime")
-    precondition(knob("glideTime") == KNOBS[0].min, "knob() must clamp corrupt values, got \(knob("glideTime"))")
+    check(knob("glideTime") == KNOBS[0].min, "knob() must clamp corrupt values, got \(knob("glideTime"))")
     UserDefaults.standard.set(saved, forKey: "glideTime")
     // 6) activation matches exactly: CG's per-event noise flags are ignored, but an extra modifier is not
     let savedFlags = UserDefaults.standard.object(forKey: "modifierFlags")
     setFlags(DEFAULT_FLAGS)
-    precondition(flagsMatch([.maskControl, .maskCommand]), "⌃⌘ must match ⌃⌘")
-    precondition(flagsMatch([.maskControl, .maskCommand, .maskNonCoalesced, .maskAlphaShift]), "noise flags must not block a match")
-    precondition(!flagsMatch([.maskControl, .maskCommand, .maskShift]), "⌃⇧⌘ belongs to another app, not us")
-    precondition(!flagsMatch([.maskControl]), "⌃ alone must not match")
+    check(flagsMatch([.maskControl, .maskCommand]), "⌃⌘ must match ⌃⌘")
+    check(flagsMatch([.maskControl, .maskCommand, .maskNonCoalesced, .maskAlphaShift]), "noise flags must not block a match")
+    check(!flagsMatch([.maskControl, .maskCommand, .maskShift]), "⌃⇧⌘ belongs to another app, not us")
+    check(!flagsMatch([.maskControl]), "⌃ alone must not match")
     UserDefaults.standard.set(savedFlags, forKey: "modifierFlags")
     // 7) the menu bar fences the top, per display, so a thrown window's title bar stays reachable
     let solo = [(frame: CGRect(x: 0, y: 0, width: 1440, height: 900), menuBar: CGFloat(38))]
     let soloUnion = CGRect(x: 0, y: 0, width: 1440, height: 900)
-    precondition(coastRect(soloUnion, titleBar: CGPoint(x: 700, y: 400), solo) == CGRect(x: 0, y: 38, width: 1440, height: 862),
+    check(coastRect(soloUnion, titleBar: CGPoint(x: 700, y: 400), solo) == CGRect(x: 0, y: 38, width: 1440, height: 862),
                  "single display should fence its menu bar")
     // a laptop + an external with no menu bar of its own: each display keeps its own ceiling
     let mixed = [(frame: CGRect(x: 0, y: 0, width: 1920, height: 1080), menuBar: CGFloat(30)),
                  (frame: CGRect(x: -1920, y: 0, width: 1920, height: 1080), menuBar: CGFloat(0))]
     let mixedUnion = CGRect(x: -1920, y: 0, width: 3840, height: 1080)
-    precondition(coastRect(mixedUnion, titleBar: CGPoint(x: 900, y: 10), mixed).minY == 30, "menu-bar display must be fenced")
-    precondition(coastRect(mixedUnion, titleBar: CGPoint(x: -1000, y: 10), mixed).minY == 0,
+    check(coastRect(mixedUnion, titleBar: CGPoint(x: 900, y: 10), mixed).minY == 30, "menu-bar display must be fenced")
+    check(coastRect(mixedUnion, titleBar: CGPoint(x: -1000, y: 10), mixed).minY == 0,
                  "a display with no menu bar must keep its full height")
     // stacked: the title bar's own display decides, not whichever menu bar is tallest
     let stacked = [(frame: CGRect(x: 0, y: -1080, width: 1920, height: 1080), menuBar: CGFloat(24)),
                    (frame: CGRect(x: 0, y: 0, width: 1440, height: 900), menuBar: CGFloat(38))]
     let stackedUnion = CGRect(x: 0, y: -1080, width: 1920, height: 1980)
-    precondition(coastRect(stackedUnion, titleBar: CGPoint(x: 700, y: -500), stacked).minY == -1056, "upper display's own menu bar")
-    precondition(coastRect(stackedUnion, titleBar: CGPoint(x: 700, y: 500), stacked).minY == 38, "lower display's own menu bar")
+    check(coastRect(stackedUnion, titleBar: CGPoint(x: 700, y: -500), stacked).minY == -1056, "upper display's own menu bar")
+    check(coastRect(stackedUnion, titleBar: CGPoint(x: 700, y: 500), stacked).minY == 38, "lower display's own menu bar")
     // degenerate inputs fall back to the unfenced desktop rather than trapping
-    precondition(coastRect(soloUnion, titleBar: CGPoint(x: 700, y: 400), []) == soloUnion, "no displays → leave bounds alone")
-    precondition(coastRect(soloUnion, titleBar: CGPoint(x: 9_999, y: 400), solo) == soloUnion, "off-desktop title bar → no fence")
+    check(coastRect(soloUnion, titleBar: CGPoint(x: 700, y: 400), []) == soloUnion, "no displays → leave bounds alone")
+    check(coastRect(soloUnion, titleBar: CGPoint(x: 9_999, y: 400), solo) == soloUnion, "off-desktop title bar → no fence")
     // and the fence holds in the physics: thrown hard upward, the window never enters the menu bar
     p = CGPoint(x: 700, y: 500); v = CGVector(dx: 0, dy: -6000)
     for _ in 0..<Int(COAST_HZ * 5) {
         let b = coastRect(soloUnion, titleBar: CGPoint(x: p.x + size.width / 2, y: p.y), solo)
         (p, v) = coastStep(pos: p, vel: v, size: size, bounds: b, dt: dt, tau: 0.22, restitution: 0.35)
-        precondition(p.y >= 38, "window slid under the menu bar: \(p.y)")
+        check(p.y >= 38, "window slid under the menu bar: \(p.y)")
     }
     // 8) key migration: carries a tuned value to the new name, retires the old key, never clobbers, and is
     // safe to run repeatedly. Uses scratch keys so a real setting is never touched by the test.
@@ -232,37 +234,37 @@ func runSelfTest() {
     let (oldK, newK) = ("selftestOldKey", "selftestNewKey")
     d.removeObject(forKey: newK); d.set(7.5, forKey: oldK)
     migrateKeys([(oldK, newK)])
-    precondition(d.double(forKey: newK) == 7.5, "a stored value must move to the new key")
-    precondition(d.object(forKey: oldK) == nil, "the old key must be retired once moved")
+    check(d.double(forKey: newK) == 7.5, "a stored value must move to the new key")
+    check(d.object(forKey: oldK) == nil, "the old key must be retired once moved")
     d.set(1.0, forKey: oldK); d.set(2.0, forKey: newK)          // both present: the newer value wins
     migrateKeys([(oldK, newK)])
-    precondition(d.double(forKey: newK) == 2.0, "must not clobber a value already under the new key")
-    precondition(d.object(forKey: oldK) == nil, "the old key must be retired even when nothing is copied")
+    check(d.double(forKey: newK) == 2.0, "must not clobber a value already under the new key")
+    check(d.object(forKey: oldK) == nil, "the old key must be retired even when nothing is copied")
     migrateKeys([(oldK, newK)])                                 // idempotent: nothing left to do
-    precondition(d.double(forKey: newK) == 2.0, "a second run must change nothing")
+    check(d.double(forKey: newK) == 2.0, "a second run must change nothing")
     d.removeObject(forKey: newK)
     // every old name maps to a key the app actually reads, or a migration would land somewhere unused
     for (_, new) in RENAMED_KEYS {
-        precondition(KNOBS.contains { $0.key == new } || EXTRA_KEYS.contains(new),
+        check(KNOBS.contains { $0.key == new } || EXTRA_KEYS.contains(new),
                      "migration target \(new) is read by nothing — the setting would be silently lost")
     }
     // 9) the Labels choice swaps between plain names and notation; every knob carries both, unambiguously
     let savedLabels = d.object(forKey: "notationLabels")
     d.set(false, forKey: "notationLabels")
-    precondition(labelText(KNOBS[0].name, KNOBS[0].sym).string == "Glide Time", "Plain should give the plain name")
+    check(labelText(KNOBS[0].name, KNOBS[0].sym).string == "Glide Time", "Plain should give the plain name")
     d.set(true, forKey: "notationLabels")
-    precondition(labelText(KNOBS[0].name, KNOBS[0].sym).string == "τ", "Notation should give the symbol")
+    check(labelText(KNOBS[0].name, KNOBS[0].sym).string == "τ", "Notation should give the symbol")
     d.set(savedLabels, forKey: "notationLabels")
-    precondition(KNOBS.allSatisfy { !$0.sym.isEmpty && !$0.name.isEmpty }, "every knob needs a name and notation")
-    precondition(Set(KNOBS.map { $0.sym }).count == KNOBS.count, "notation must be unique per knob")
+    check(KNOBS.allSatisfy { !$0.sym.isEmpty && !$0.name.isEmpty }, "every knob needs a name and notation")
+    check(Set(KNOBS.map { $0.sym }).count == KNOBS.count, "notation must be unique per knob")
     // the subscript must be a real lowered, smaller run — not "min" concatenated at full size
     let sub = notation("|v|_min")
-    precondition(sub.string == "|v|min", "subscript should join its base, got \(sub.string)")
+    check(sub.string == "|v|min", "subscript should join its base, got \(sub.string)")
     var lowered = false
     sub.enumerateAttribute(.baselineOffset, in: NSRange(location: 0, length: sub.length)) { v, _, _ in
         if let off = v as? CGFloat, off < 0 { lowered = true }
     }
-    precondition(lowered, "the subscript run needs a negative baseline offset")
+    check(lowered, "the subscript run needs a negative baseline offset")
     // Every symbol must exist in the system font. A character SF Pro lacks (∝, or subscript i/r from
     // Phonetic Extensions) silently falls back to Apple Symbols or Helvetica Neue, putting two typefaces
     // in one label. This fails the build's self-test rather than shipping that.
@@ -270,7 +272,7 @@ func runSelfTest() {
     for k in KNOBS {
         for ch in k.sym.unicodeScalars where ch.value > 127 {
             var chars = Array(String(ch).utf16), glyphs = [CGGlyph](repeating: 0, count: chars.count)
-            precondition(CTFontGetGlyphsForCharacters(sysFont, &chars, &glyphs, chars.count),
+            check(CTFontGetGlyphsForCharacters(sysFont, &chars, &glyphs, chars.count),
                          "\(k.sym): U+\(String(ch.value, radix: 16, uppercase: true)) is not in SF Pro and would fall back")
         }
     }
@@ -278,10 +280,10 @@ func runSelfTest() {
     // marketing version must be MAJOR.MINOR.PATCH, so a two-component "0.9" fails the build instead of
     // shipping and making two different builds indistinguishable.
     let appV = appVersion()
-    precondition(appV.short != "?" && appV.build != "?", "version must be readable from the bundle, got \(appV)")
-    precondition(appV.short.split(separator: ".").count == 3,
+    check(appV.short != "?" && appV.build != "?", "version must be readable from the bundle, got \(appV)")
+    check(appV.short.split(separator: ".").count == 3,
                  "CFBundleShortVersionString must be MAJOR.MINOR.PATCH, got \(appV.short)")
-    precondition(Int(appV.build) != nil, "CFBundleVersion must be a plain build number, got \(appV.build)")
+    check(Int(appV.build) != nil, "CFBundleVersion must be a plain build number, got \(appV.build)")
     print("selftest OK")
 }
 
@@ -289,12 +291,14 @@ func runSelfTest() {
 func axGetPoint(_ e: AXUIElement) -> CGPoint? {
     var v: CFTypeRef?
     guard AXUIElementCopyAttributeValue(e, kAXPositionAttribute as CFString, &v) == .success else { return nil }
-    var p = CGPoint.zero; AXValueGetValue(v as! AXValue, .cgPoint, &p); return p
+    guard let av = v, CFGetTypeID(av) == AXValueGetTypeID() else { return nil }   // buggy AX in another app must not crash us
+    var p = CGPoint.zero; AXValueGetValue(av as! AXValue, .cgPoint, &p); return p
 }
 func axGetSize(_ e: AXUIElement) -> CGSize? {
     var v: CFTypeRef?
     guard AXUIElementCopyAttributeValue(e, kAXSizeAttribute as CFString, &v) == .success else { return nil }
-    var s = CGSize.zero; AXValueGetValue(v as! AXValue, .cgSize, &s); return s
+    guard let av = v, CFGetTypeID(av) == AXValueGetTypeID() else { return nil }
+    var s = CGSize.zero; AXValueGetValue(av as! AXValue, .cgSize, &s); return s
 }
 func axSetPoint(_ e: AXUIElement, _ p: CGPoint) {
     var pt = p; guard let v = AXValueCreate(.cgPoint, &pt) else { return }
@@ -307,7 +311,6 @@ func axRole(_ e: AXUIElement) -> String {
 }
 func windowUnder(_ p: CGPoint) -> AXUIElement? {
     let sys = AXUIElementCreateSystemWide()
-    AXUIElementSetMessagingTimeout(sys, 0.05)          // this runs inside the event tap — never let AX hang it
     var el: AXUIElement?
     guard AXUIElementCopyElementAtPosition(sys, Float(p.x), Float(p.y), &el) == .success,
           var cur = el else { return nil }
@@ -317,8 +320,8 @@ func windowUnder(_ p: CGPoint) -> AXUIElement? {
         if axRole(cur) == (kAXWindowRole as String) { return cur }
         var parent: CFTypeRef?
         guard AXUIElementCopyAttributeValue(cur, kAXParentAttribute as CFString, &parent) == .success,
-              let pr = parent else { return nil }
-        cur = pr as! AXUIElement
+              let pr = parent, CFGetTypeID(pr) == AXUIElementGetTypeID() else { return nil }
+        cur = pr as! AXUIElement                        // safe: type checked on the line above
     }
     return nil
 }
@@ -580,8 +583,9 @@ final class Controller: NSObject, NSPopoverDelegate {
     var coastPos = CGPoint.zero
     var coastVel = CGVector.zero
     var coastBounds = CGRect.zero
-    var coastDisplays: [(frame: CGRect, menuBar: CGFloat)] = []   // snapshot per throw; NSScreen is main-thread only
+    var coastDisplays: [(frame: CGRect, menuBar: CGFloat)] = []   // snapshot per throw: no NSScreen walk per frame
     var coastMass = 1.0
+    var coastTau = 0.22, coastRest = 0.35, coastStop = 40.0   // knobs snapshotted per throw, not read per frame
     var shortcutPopup: NSPopUpButton!
     var customItem: NSMenuItem?
     var hintLabel: NSTextField!
@@ -592,16 +596,16 @@ final class Controller: NSObject, NSPopoverDelegate {
     // Labels the Plain/Notation choice retitles, so it can rewrite text in place instead of rebuilding the
     // panel. Rebuilt every layout; stale entries would point at removed views.
     var retitledLabels: [(field: NSTextField, name: String, sym: String)] = []
-    var recordMonitor: Any?
+    var recordMonitor: Any?                 // non-nil while recording a custom shortcut
     var recordPeak: CGEventFlags = []
-    var recording = false
+    var recording: Bool { recordMonitor != nil }
 
     func start() {
         migrateKeys(RENAMED_KEYS)        // before register(defaults:) — see the note on migrateKeys
         UserDefaults.standard.register(defaults: Dictionary(uniqueKeysWithValues: KNOBS.map { ($0.key, $0.def) }))
         UserDefaults.standard.register(defaults: ["previewOpen": true, "massByArea": true])
         previewOpen = UserDefaults.standard.bool(forKey: "previewOpen")
-        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.1)   // global cap: no AX call can hang the app
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.05)  // global cap: windowUnder runs inside the event tap, AX must never hang it
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = Self.menuBarIcon()
         statusItem.button?.target = self
@@ -612,7 +616,10 @@ final class Controller: NSObject, NSPopoverDelegate {
         checkPermissionAndInstall()
     }
 
-    func popoverDidClose(_ n: Notification) { cancelRecord() }   // tear down an in-progress recorder
+    func popoverDidClose(_ n: Notification) {
+        cancelRecord()                        // tear down an in-progress recorder
+        popover.contentViewController = nil   // detach the views so PreviewStrip loses its window and stops its display link
+    }
 
     @objc func togglePopover() {
         guard let b = statusItem.button else { return }
@@ -740,15 +747,14 @@ final class Controller: NSObject, NSPopoverDelegate {
         ci.target = self; ci.tag = 100
         shortcutPopup.menu?.addItem(ci); customItem = ci
         shortcutPopup.setAccessibilityLabel("Activation shortcut")   // its caption is a sibling label
-        endRecordMonitor(); recording = false; recordPeak = []   // clear any stale recorder from a prior open
-        refreshShortcutSelection()
+        cancelRecord()                                       // clear any stale recorder from a prior open
         root.addSubview(shortcutPopup); y += 26 + 16
 
         // feel sliders — no numbers, drag to taste
         func sliderRow(_ i: Int) {
             let hit: (Bool) -> Void = { [weak self] over in self?.hintLabel?.stringValue = over ? KNOBS[i].tip : IDLE_HINT }
-            let name = HoverText(frame: NSRect(x: 16, y: y, width: W - 32, height: 16))
-            name.isEditable = false; name.isSelectable = false; name.isBezeled = false; name.drawsBackground = false
+            let name = HoverText(labelWithString: "")
+            name.frame = NSRect(x: 16, y: y, width: W - 32, height: 16)
             name.attributedStringValue = labelText(KNOBS[i].name, KNOBS[i].sym)
             retitledLabels.append((name, KNOBS[i].name, KNOBS[i].sym))
             name.onHover = hit; root.addSubview(name)
@@ -765,8 +771,8 @@ final class Controller: NSObject, NSPopoverDelegate {
 
         // toggle rows: hoverable label on the left, NSSwitch on the right. Two of them, one builder.
         func switchRow(_ title: String, _ sym: String, _ tip: String, _ on: Bool, _ action: Selector) {
-            let l = HoverText(frame: NSRect(x: 16, y: y + 4, width: W - 80, height: 16))
-            l.isEditable = false; l.isSelectable = false; l.isBezeled = false; l.drawsBackground = false
+            let l = HoverText(labelWithString: "")
+            l.frame = NSRect(x: 16, y: y + 4, width: W - 80, height: 16)
             l.attributedStringValue = labelText(title, sym)
             retitledLabels.append((l, title, sym))
             l.onHover = { [weak self] over in self?.hintLabel?.stringValue = over ? tip : IDLE_HINT }
@@ -807,10 +813,9 @@ final class Controller: NSObject, NSPopoverDelegate {
             // switch because both states are then visible at once: naming
             // it as a "mode" meant that turning it on hid the only control that could turn it off, and
             // left every label in symbols. It also sidesteps naming the mode at all.
-            let lcap = HoverText(frame: NSRect(x: 16, y: y, width: W - 32, height: 14))
-            lcap.isEditable = false; lcap.isSelectable = false; lcap.isBezeled = false; lcap.drawsBackground = false
+            let lcap = HoverText(labelWithString: "Labels")
+            lcap.frame = NSRect(x: 16, y: y, width: W - 32, height: 14)
             lcap.font = .systemFont(ofSize: 11, weight: .semibold); lcap.textColor = .secondaryLabelColor
-            lcap.stringValue = "Labels"
             let lTip = "Name the controls with words, or with their physics symbols."
             lcap.onHover = { [weak self] over in self?.hintLabel?.stringValue = over ? lTip : IDLE_HINT }
             root.addSubview(lcap); y += 18
@@ -838,11 +843,10 @@ final class Controller: NSObject, NSPopoverDelegate {
         // version centered between the two icon buttons: tertiary label color and 10pt, so it reads as a
         // footnote rather than a control, but it answers "which build am I actually running?" at a glance.
         let v = appVersion()
-        let ver = HoverText(frame: NSRect(x: 44, y: y + 6, width: W - 88, height: 14))   // +6 centers it on the 26pt buttons
-        ver.isEditable = false; ver.isSelectable = false; ver.isBezeled = false; ver.drawsBackground = false
+        let ver = HoverText(labelWithString: "\(v.short) (\(v.build))")
+        ver.frame = NSRect(x: 44, y: y + 6, width: W - 88, height: 14)   // +6 centers it on the 26pt buttons
         ver.alignment = .center
         ver.font = .systemFont(ofSize: 10); ver.textColor = .tertiaryLabelColor
-        ver.stringValue = "\(v.short) (\(v.build))"
         ver.setAccessibilityLabel("Version \(v.short), build \(v.build)")   // spoken, not read as punctuation
         ver.onHover = { [weak self] over in
             self?.hintLabel?.stringValue = over ? "Inertia \(v.short), build \(v.build). The copy running now." : IDLE_HINT }
@@ -871,7 +875,7 @@ final class Controller: NSObject, NSPopoverDelegate {
     // --- activation: pick from the menu, or "Custom…" to record any combo ---
     @objc func shortcutPicked(_ sender: NSMenuItem) {
         if sender.tag == 100 { startRecording(); return }
-        endRecordMonitor(); recording = false
+        endRecordMonitor()
         let i = sender.tag - 1
         guard SHORTCUTS.indices.contains(i) else { return }
         setFlags(SHORTCUTS[i]); refreshShortcutSelection()
@@ -891,8 +895,6 @@ final class Controller: NSObject, NSPopoverDelegate {
 
     func startRecording() {
         endRecordMonitor()                       // never stack monitors
-        recording = true; recordPeak = []
-        refreshShortcutSelection()               // shows "Press keys…"
         recordMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] ev in
             guard let self, self.recording else { self?.endRecordMonitor(); return ev }  // stale monitor self-heals
             if ev.type == .keyDown { if ev.keyCode == 53 { self.cancelRecord() }; return ev }  // Esc cancels
@@ -905,22 +907,23 @@ final class Controller: NSObject, NSPopoverDelegate {
             }
             return ev
         }
+        refreshShortcutSelection()               // shows "Press keys…"
     }
 
     func commitRecord() {
         guard recording else { return }
         let f = recordPeak
-        endRecordMonitor(); recording = false
+        endRecordMonitor()
         guard !f.isEmpty else { refreshShortcutSelection(); return }
         setFlags(f); refreshShortcutSelection()
     }
 
     func cancelRecord() {
-        endRecordMonitor(); recording = false; recordPeak = []
+        endRecordMonitor()
         refreshShortcutSelection()               // restores from the (unchanged) stored flags
     }
 
-    func endRecordMonitor() { if let m = recordMonitor { NSEvent.removeMonitor(m); recordMonitor = nil } }
+    func endRecordMonitor() { if let m = recordMonitor { NSEvent.removeMonitor(m) }; recordMonitor = nil; recordPeak = [] }
 
     @objc func toggleAdvanced() {
         advancedOpen.toggle()
@@ -955,8 +958,9 @@ final class Controller: NSObject, NSPopoverDelegate {
     @objc func resetKnobs() {
         for k in KNOBS { UserDefaults.standard.set(k.def, forKey: k.key) }
         UserDefaults.standard.set(true, forKey: "massByArea")   // mass-by-area is on by default
+        UserDefaults.standard.set(false, forKey: "notationLabels")
         setFlags(DEFAULT_FLAGS)
-        endRecordMonitor(); recording = false
+        endRecordMonitor()
         layoutContents()                                        // rebuild so sliders, switch, and shortcut reflect defaults
         if let root = panelRoot { popover.contentSize = root.frame.size }
     }
@@ -969,9 +973,14 @@ final class Controller: NSObject, NSPopoverDelegate {
             _ = AXIsProcessTrustedWithOptions(opts)  // system prompt; the panel banner deep-links the pane
         }
         reconcileTap()
-        // Keep reconciling forever: install the tap when trust is granted, remove it if trust is ever
-        // revoked. Self-healing both ways, so a permission change can never strand a live input tap.
-        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.reconcileTap() }
+        // Re-check when the Accessibility list changes (grant or revoke) instead of polling: the old 0.5s
+        // timer created and destroyed a real event tap twice a second for the life of the process. A revoke
+        // also disables the live tap, which handle() already routes to removeTap + reconcileTap.
+        DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.accessibility.api"),
+                                                            object: nil, queue: .main) { [weak self] _ in
+            // TCC posts before its own state settles; a short delay makes hasAccess() see the new answer
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self?.reconcileTap() }
+        }
     }
 
     func installTap() {
@@ -1073,14 +1082,19 @@ final class Controller: NSObject, NSPopoverDelegate {
     func endGrab() {
         grabbing = false
         guard let w = win, let pos = axGetPoint(w) else { return }
+        // No drag events arrive while the mouse is still, so emaVel would keep the last flick's speed:
+        // flick, hold motionless, let go must NOT throw.
+        if CACurrentMediaTime() - lastTime > 0.1 { emaVel = .zero }
         coastMass = useMass() ? massFactor(winSize) : 1.0          // window inertia (off → every window the same)
         if hypot(emaVel.dx, emaVel.dy) < knob("minReleaseSpeed") * coastMass { return }  // heavier resists starting
         if !hasThrown() { UserDefaults.standard.set(true, forKey: "hasThrown") }  // first throw retires the first-run hint
         let gain = knob("launchGain")
+        coastTau = knob("glideTime") * coastMass; coastRest = knob("restitution"); coastStop = knob("restSpeed")
         coastPos = pos; coastVel = CGVector(dx: emaVel.dx * gain, dy: emaVel.dy * gain)
         coastDisplays = activeDisplays()
         coastBounds = coastDisplays.map { $0.frame }.reduce(.null) { $0.union($1) }
         if coastBounds.isNull || coastBounds.isEmpty { return }   // displays mid-reconfigure: no bounds, no coast
+        // ponytail: union rect, so an L-shaped layout has dead space a window can park in; clamp to the nearest display if reported
         // Vsync-locked coast (macOS 14+): fires at the display's native rate, so it stays smooth on
         // ProMotion and does no wasted AX writes on 60Hz — unlike a fixed 120Hz Timer.
         let link = NSScreen.main?.displayLink(target: self, selector: #selector(coastTick(_:)))
@@ -1094,9 +1108,9 @@ final class Controller: NSObject, NSPopoverDelegate {
         // coastPos is the window's top-left, so its title bar's midpoint decides which menu bar fences it
         let bounds = coastRect(coastBounds, titleBar: CGPoint(x: coastPos.x + winSize.width / 2, y: coastPos.y), coastDisplays)
         (coastPos, coastVel) = coastStep(pos: coastPos, vel: coastVel, size: winSize, bounds: bounds,
-                                         dt: dt, tau: knob("glideTime") * coastMass, restitution: knob("restitution"))
+                                         dt: dt, tau: coastTau, restitution: coastRest)
         axSetPoint(w, coastPos)
-        if hypot(coastVel.dx, coastVel.dy) < knob("restSpeed") { stopCoast() }
+        if hypot(coastVel.dx, coastVel.dy) < coastStop { stopCoast() }
     }
 
     func stopCoast() { coastLink?.invalidate(); coastLink = nil }

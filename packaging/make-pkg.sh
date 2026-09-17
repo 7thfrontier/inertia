@@ -8,7 +8,7 @@ export COPYFILE_DISABLE=1        # keeps tar from adding AppleDouble entries. No
                                  # the installer restores those as metadata, not as visible files.
 cd "$(dirname "$0")/.."          # repo root
 APP="Inertia.app"
-[ -d "$APP" ] || ./build.sh
+./build.sh                       # always rebuild: a stale .app from an older main.swift must never ship
 
 # Info.plist is the single source of truth for the version; bump it before every release.
 #   CFBundleShortVersionString = semver MAJOR.MINOR.PATCH — the marketing version users and the pkg see.

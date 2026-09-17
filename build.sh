@@ -14,4 +14,5 @@ swiftc -O main.swift -o "$APP/Contents/MacOS/Inertia" \
     -target arm64-apple-macos15.0 \
     -framework Cocoa -framework ApplicationServices
 codesign --force -s - "$APP"   # ad-hoc; real distribution needs a Developer ID + notarization
+"$APP/Contents/MacOS/Inertia" --selftest   # physics, migration, glyph, and version checks; a failure fails the build
 echo "Built $APP"
