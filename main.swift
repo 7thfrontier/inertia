@@ -148,6 +148,10 @@ func coastStep(pos: CGPoint, vel: CGVector, size: CGSize, bounds: CGRect, dt: Do
     return (p, v)
 }
 
+// Velocity a release launches with. No drag events arrive while the mouse is still, so the EMA would keep
+// the last flick's speed: flick, hold motionless, let go must NOT throw. Pure so the self-test can pin it.
+func releaseVelocity(_ ema: CGVector, idleFor idle: CFTimeInterval) -> CGVector { idle > 0.1 ? .zero : ema }
+
 // Inertia ∝ mass ∝ window area. Bigger windows carry more momentum (coast longer) and resist starting.
 // Sub-linear + clamped so it's felt but never sends a window into orbit.
 func massFactor(_ size: CGSize) -> Double {
@@ -284,6 +288,68 @@ func runSelfTest() {
     check(appV.short.split(separator: ".").count == 3,
                  "CFBundleShortVersionString must be MAJOR.MINOR.PATCH, got \(appV.short)")
     check(Int(appV.build) != nil, "CFBundleVersion must be a plain build number, got \(appV.build)")
+    // 11) a release after holding still must not throw; a prompt release keeps the flick
+    let flick = CGVector(dx: 900, dy: -300)
+    check(releaseVelocity(flick, idleFor: 0.5) == .zero, "held still 0.5s: must release with zero velocity")
+    check(releaseVelocity(flick, idleFor: 0.02) == flick, "released 20ms after the last drag: must keep the flick")
+    // 12) shortcut flags: canonical symbol order, NSEvent→CG mapping, and storage that survives corruption
+    check(flagsSymbol(MODMASK) == "fn⌃⌥⇧⌘", "symbols must come out in fn⌃⌥⇧⌘ order, got \(flagsSymbol(MODMASK))")
+    check(flagsSymbol([]) == "—", "no modifiers must show a dash")
+    check(cgFlags(from: [.control, .command]) == [.maskControl, .maskCommand], "⌃⌘ must map to CG control+command")
+    check(cgFlags(from: [.function, .option, .shift]) == [.maskSecondaryFn, .maskAlternate, .maskShift], "fn⌥⇧ must map bit for bit")
+    check(cgFlags(from: [.capsLock, .numericPad]) == [], "caps lock and numpad are not activation modifiers")
+    check(Set(SHORTCUTS.map { $0.rawValue }).count == SHORTCUTS.count, "shortcut menu must not list a combo twice")
+    check(SHORTCUTS.contains(DEFAULT_FLAGS), "the default shortcut must be pickable from the menu")
+    let savedRaw = d.object(forKey: "modifierFlags")
+    d.set(-1, forKey: "modifierFlags")                          // corrupt: every bit set, negative
+    check(activeFlags() == MODMASK, "a corrupt all-bits default must not trap and must keep only real modifiers")
+    d.set(0, forKey: "modifierFlags")
+    check(activeFlags() == DEFAULT_FLAGS, "no stored shortcut must fall back to ⌃⌘")
+    setFlags([.maskShift, .maskCommand, .maskNonCoalesced])       // noise bit must not be persisted
+    check(activeFlags() == [.maskShift, .maskCommand], "setFlags must store only activation modifiers")
+    d.set(savedRaw, forKey: "modifierFlags")
+    // 13) coastStep edges: zero restitution stops dead at a wall; a stalled frame (dt == tau) decays, never grows
+    let (_, dead) = coastStep(pos: CGPoint(x: bounds.maxX - size.width - 1, y: 500), vel: CGVector(dx: 5000, dy: 0),
+                              size: size, bounds: bounds, dt: dt, tau: 0.22, restitution: 0)
+    check(dead.dx == 0, "restitution 0 must absorb the whole impact, got dx \(dead.dx)")
+    let (_, slow) = coastStep(pos: CGPoint(x: 500, y: 500), vel: CGVector(dx: 100, dy: 100), size: size, bounds: bounds,
+                              dt: 0.05, tau: 0.05, restitution: 0.35)
+    check(hypot(slow.dx, slow.dy) < hypot(100, 100), "a long frame must still decay velocity")
+    check(massFactor(CGSize(width: 800, height: 600)) < massFactor(CGSize(width: 1600, height: 1200)), "mass must grow with area")
+    // 14) the mark actually draws: the menu-bar icon must have ink, not be an empty template
+    _ = NSApplication.shared                                     // views and images below need an app context
+    let icon = Controller.menuBarIcon()
+    var inked = 0
+    if let tiff = icon.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+        for x in 0..<rep.pixelsWide { for y in 0..<rep.pixelsHigh where (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5 { inked += 1 } }
+    }
+    check(inked > 40, "menu-bar icon rendered \(inked) opaque pixels; the mark is missing")
+    check(icon.isTemplate, "menu-bar icon must be a template so it tints for light and dark")
+    // 15) the panel builds in every state and reflects its toggles; a crash here is a crash on every click
+    let savedPreview = d.object(forKey: "previewOpen"), savedNotation = d.object(forKey: "notationLabels")
+    d.set(true, forKey: "previewOpen"); d.set(false, forKey: "notationLabels")
+    let c = Controller(); c.previewOpen = true
+    let vc = c.buildPanel()
+    func sliders() -> Int { vc.view.subviews.filter { $0 is HoverSlider }.count }
+    func previews() -> Int { vc.view.subviews.filter { $0 is PreviewStrip }.count }
+    check(sliders() == PRIMARY.count, "closed panel must show the \(PRIMARY.count) primary sliders, got \(sliders())")
+    check(previews() == 1, "preview must be shown when previewOpen is on")
+    let closedH = vc.view.frame.height
+    c.toggleAdvanced()
+    check(sliders() == KNOBS.count, "Advanced must reveal every knob, got \(sliders())")
+    check(vc.view.frame.height > closedH, "opening Advanced must grow the panel")
+    c.togglePreview()
+    check(previews() == 0, "collapsing the preview must remove the strip")
+    check(!d.bool(forKey: "previewOpen"), "collapsing the preview must be remembered")
+    check(vc.view.subviews.contains { $0 is NSSegmentedControl }, "Labels control must be inside Advanced")
+    check(c.retitledLabels.count == KNOBS.count + 1, "every knob label plus the switch label must be retitlable, got \(c.retitledLabels.count)")
+    d.set(true, forKey: "notationLabels")
+    let seg = NSSegmentedControl(labels: ["Standard", "Scientific"], trackingMode: .selectOne, target: nil, action: nil)
+    seg.selectedSegment = 1; c.labelsChanged(seg)
+    check(c.retitledLabels.allSatisfy { $0.field.stringValue == notation($0.sym).string }, "Scientific must retitle every label to its symbol in place")
+    check(c.hintLabel.stringValue == IDLE_HINT, "help line must start on the idle hint")
+    c.endRecordMonitor()
+    d.set(savedPreview, forKey: "previewOpen"); d.set(savedNotation, forKey: "notationLabels")
     print("selftest OK")
 }
 
@@ -1082,9 +1148,7 @@ final class Controller: NSObject, NSPopoverDelegate {
     func endGrab() {
         grabbing = false
         guard let w = win, let pos = axGetPoint(w) else { return }
-        // No drag events arrive while the mouse is still, so emaVel would keep the last flick's speed:
-        // flick, hold motionless, let go must NOT throw.
-        if CACurrentMediaTime() - lastTime > 0.1 { emaVel = .zero }
+        emaVel = releaseVelocity(emaVel, idleFor: CACurrentMediaTime() - lastTime)
         coastMass = useMass() ? massFactor(winSize) : 1.0          // window inertia (off → every window the same)
         if hypot(emaVel.dx, emaVel.dy) < knob("minReleaseSpeed") * coastMass { return }  // heavier resists starting
         if !hasThrown() { UserDefaults.standard.set(true, forKey: "hasThrown") }  // first throw retires the first-run hint
