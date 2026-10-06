@@ -1,18 +1,17 @@
 // Inertia — throw macOS windows; they keep their size and coast with momentum.
 // Menu-bar accessory app. ⌃⌘ + drag any window, flick, release -> it coasts and bounces off edges.
 // Build: ./build.sh   Self-test physics: ./build.sh && Inertia.app/Contents/MacOS/Inertia --selftest
-// © 2026 7th Frontier, Inc. All rights reserved.
+// © 2026 7th Frontier, Inc. MIT License, see LICENSE.
 import Cocoa
 import ApplicationServices
 import QuartzCore
+import ServiceManagement
 
 // ---- fixed tunables ----
 let COAST_HZ    = 120.0   // self-test simulation rate only; the live coast is vsync-paced (see coastTick)
 
 // ---- user-adjustable knobs (persisted in UserDefaults). No numbers: tune by feel. ----
 // Label and storage key both name the quantity itself; the hover hint carries the plain-language gloss.
-// The earlier labels were feel-words, and one was wrong: "Momentum" sat on a decay time constant, while
-// momentum is mass times velocity — the thing the Mass by Area switch actually controls.
 // PRIMARY = the feel; ADVANCED = the two thresholds, tucked behind a disclosure.
 // `sym` is the physics notation shown when Labels is set to Notation. Restricted to glyphs SF Pro
 // actually has: letter subscripts (vₘᵢₙ) and ∝ are absent from it and would silently fall back to a
@@ -41,25 +40,6 @@ let KNOBS = [
 let PRIMARY = [2, 0, 1]      // Launch Gain, Glide Time, Restitution
 let ADVANCED = [3, 4]        // Minimum Release Speed, Rest Speed
 
-// Storage keys were renamed alongside the labels, so anything already tuned has to be carried across or
-// the user silently loses it. Self-retiring: the old key is removed once moved, so this is a no-op from
-// then on. Takes its table as a parameter purely so the self-test can exercise it on scratch keys.
-let RENAMED_KEYS = [("coastTau", "glideTime"), ("bounce", "restitution"), ("strength", "launchGain"),
-                    ("minThrow", "minReleaseSpeed"), ("stopSpeed", "restSpeed"), ("massBySize", "massByArea"),
-                    ("nerdMode", "notationLabels")]
-// Everything the app persists that isn't a knob. Keeps the self-test's schema check honest: a migration
-// that lands on a key nothing reads is a silently lost setting.
-let EXTRA_KEYS = ["massByArea", "notationLabels", "previewOpen", "hasThrown", "modifierFlags"]
-// MUST run before register(defaults:). Registration makes object(forKey:) return the registered default
-// instead of nil, so the "is the new key already set?" test below would answer yes for every key and
-// every migration would be skipped.
-func migrateKeys(_ pairs: [(String, String)], _ d: UserDefaults = .standard) {
-    for (old, new) in pairs {
-        guard let v = d.object(forKey: old) else { continue }    // nothing stored under the old name
-        if d.object(forKey: new) == nil { d.set(v, forKey: new) }  // never clobber a value already there
-        d.removeObject(forKey: old)                              // retire the old key either way
-    }
-}
 func knob(_ key: String) -> Double {
     let v = UserDefaults.standard.double(forKey: key)
     guard let k = KNOBS.first(where: { $0.key == key }) else { return v }
@@ -232,26 +212,7 @@ func runSelfTest() {
         (p, v) = coastStep(pos: p, vel: v, size: size, bounds: b, dt: dt, tau: 0.22, restitution: 0.35)
         check(p.y >= 38, "window slid under the menu bar: \(p.y)")
     }
-    // 8) key migration: carries a tuned value to the new name, retires the old key, never clobbers, and is
-    // safe to run repeatedly. Uses scratch keys so a real setting is never touched by the test.
     let d = UserDefaults.standard
-    let (oldK, newK) = ("selftestOldKey", "selftestNewKey")
-    d.removeObject(forKey: newK); d.set(7.5, forKey: oldK)
-    migrateKeys([(oldK, newK)])
-    check(d.double(forKey: newK) == 7.5, "a stored value must move to the new key")
-    check(d.object(forKey: oldK) == nil, "the old key must be retired once moved")
-    d.set(1.0, forKey: oldK); d.set(2.0, forKey: newK)          // both present: the newer value wins
-    migrateKeys([(oldK, newK)])
-    check(d.double(forKey: newK) == 2.0, "must not clobber a value already under the new key")
-    check(d.object(forKey: oldK) == nil, "the old key must be retired even when nothing is copied")
-    migrateKeys([(oldK, newK)])                                 // idempotent: nothing left to do
-    check(d.double(forKey: newK) == 2.0, "a second run must change nothing")
-    d.removeObject(forKey: newK)
-    // every old name maps to a key the app actually reads, or a migration would land somewhere unused
-    for (_, new) in RENAMED_KEYS {
-        check(KNOBS.contains { $0.key == new } || EXTRA_KEYS.contains(new),
-                     "migration target \(new) is read by nothing — the setting would be silently lost")
-    }
     // 9) the Labels choice swaps between plain names and notation; every knob carries both, unambiguously
     let savedLabels = d.object(forKey: "notationLabels")
     d.set(false, forKey: "notationLabels")
@@ -342,7 +303,8 @@ func runSelfTest() {
     check(previews() == 0, "collapsing the preview must remove the strip")
     check(!d.bool(forKey: "previewOpen"), "collapsing the preview must be remembered")
     check(vc.view.subviews.contains { $0 is NSSegmentedControl }, "Labels control must be inside Advanced")
-    check(c.retitledLabels.count == KNOBS.count + 1, "every knob label plus the switch label must be retitlable, got \(c.retitledLabels.count)")
+    check(c.retitledLabels.count == KNOBS.count + 2, "every knob label plus both switch labels must be retitlable, got \(c.retitledLabels.count)")
+    check(vc.view.subviews.filter { $0 is NSSwitch }.count == 2, "Mass by Area and Open at Login switches must both show")
     d.set(true, forKey: "notationLabels")
     let seg = NSSegmentedControl(labels: ["Standard", "Scientific"], trackingMode: .selectOne, target: nil, action: nil)
     seg.selectedSegment = 1; c.labelsChanged(seg)
@@ -419,8 +381,7 @@ func coastRect(_ union: CGRect, titleBar t: CGPoint, _ displays: [(frame: CGRect
     return CGRect(x: union.minX, y: limit, width: union.width, height: max(union.maxY - limit, 0))
 }
 
-// Version read from the bundle at runtime, never a literal in code: Info.plist is the single source of
-// truth that make-pkg.sh also stamps the installer from, so the footer can't drift out of step with it.
+// Version read from the bundle at runtime, never a literal in code, so the footer can't drift from Info.plist.
 func appVersion() -> (short: String, build: String) {
     let d = Bundle.main.infoDictionary
     return (d?["CFBundleShortVersionString"] as? String ?? "?", d?["CFBundleVersion"] as? String ?? "?")
@@ -667,7 +628,6 @@ final class Controller: NSObject, NSPopoverDelegate {
     var recording: Bool { recordMonitor != nil }
 
     func start() {
-        migrateKeys(RENAMED_KEYS)        // before register(defaults:) — see the note on migrateKeys
         UserDefaults.standard.register(defaults: Dictionary(uniqueKeysWithValues: KNOBS.map { ($0.key, $0.def) }))
         UserDefaults.standard.register(defaults: ["previewOpen": true, "massByArea": true])
         previewOpen = UserDefaults.standard.bool(forKey: "previewOpen")
@@ -856,6 +816,10 @@ final class Controller: NSObject, NSPopoverDelegate {
         switchRow("Mass by Area", "m(A)",
                   "Bigger windows carry more inertia, so they glide farther and resist starting.",
                   useMass(), #selector(toggleMass(_:)))
+        // Read from the system, not UserDefaults: the user can also remove it in System Settings > Login Items.
+        // Words in both label styles; it has no physics symbol.
+        switchRow("Open at Login", "Open at Login", "Start Inertia automatically when you log in.",
+                  SMAppService.mainApp.status == .enabled, #selector(toggleLogin(_:)))
 
         // advanced thresholds behind a disclosure — native SF Symbol chevron, not a text triangle
         let disc = NSButton(title: "Advanced", target: self, action: #selector(toggleAdvanced))
@@ -872,13 +836,8 @@ final class Controller: NSObject, NSPopoverDelegate {
         root.addSubview(disc); y += 26
         if advancedOpen {
             ADVANCED.forEach(sliderRow)
-            // Last in the fold: a display option, not a tuning knob, so it sits after the thresholds.
-            // Standard/Scientific, not Plain/Notation: "Plain" judged the other option and "Notation" was the
-            // jargon it described. These are parallel adjectives and neutral. The tip avoids the phrase
-            // "scientific notation", which means something else entirely (1.23e4). Segmented rather than a
-            // switch because both states are then visible at once: naming
-            // it as a "mode" meant that turning it on hid the only control that could turn it off, and
-            // left every label in symbols. It also sidesteps naming the mode at all.
+            // Segmented, not a switch: both states stay visible, so the control that turns symbols off is
+            // never itself hidden behind a symbol. The tip avoids "scientific notation" (that means 1.23e4).
             let lcap = HoverText(labelWithString: "Labels")
             lcap.frame = NSRect(x: 16, y: y, width: W - 32, height: 14)
             lcap.font = .systemFont(ofSize: 11, weight: .semibold); lcap.textColor = .secondaryLabelColor
@@ -1006,6 +965,12 @@ final class Controller: NSObject, NSPopoverDelegate {
 
     @objc func toggleMass(_ s: NSSwitch) {
         UserDefaults.standard.set(s.state == .on, forKey: "massByArea")   // takes effect on the next throw
+    }
+
+    @objc func toggleLogin(_ s: NSSwitch) {
+        do { try s.state == .on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister() }
+        catch { NSLog("Inertia: login item change failed: \(error)") }
+        s.state = SMAppService.mainApp.status == .enabled ? .on : .off   // show what actually happened
     }
 
     @objc func labelsChanged(_ s: NSSegmentedControl) {
@@ -1182,10 +1147,10 @@ final class Controller: NSObject, NSPopoverDelegate {
 
 // ---- main ----
 if CommandLine.arguments.contains("--selftest") { runSelfTest(); exit(0) }
-// Single instance: the LaunchAgent execs the binary directly, so nothing else dedups us — without this,
-// installing while a copy runs (postinstall bootstraps immediately) yields two icons and two event taps.
+// Single instance: a second copy (a dev build next to the installed one, or the binary run directly)
+// would add a second menu-bar icon and a second event tap fighting over the same drags.
 let myPID = ProcessInfo.processInfo.processIdentifier
-if NSRunningApplication.runningApplications(withBundleIdentifier: "com.inertia.Inertia")
+if NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
     .contains(where: { $0.processIdentifier != myPID }) {
     NSLog("Inertia: another instance is already running; exiting")
     exit(0)

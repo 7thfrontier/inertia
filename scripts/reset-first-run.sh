@@ -1,8 +1,8 @@
 #!/bin/bash
 # Replay Inertia's first-run flow without reinstalling anything.
 #
-#   ./packaging/reset-first-run.sh                the ⌃⌘ gesture hint comes back
-#   ./packaging/reset-first-run.sh --permission   ...and so does the "Grant Accessibility Access" CTA
+#   ./scripts/reset-first-run.sh                the ⌃⌘ gesture hint comes back
+#   ./scripts/reset-first-run.sh --permission   ...and so does the "Grant Accessibility Access" CTA
 #
 # Those are exactly the two first-run states the panel can show (see layoutContents: no trust -> CTA,
 # trusted but never thrown -> hint), so the two modes here map onto them one for one.
@@ -10,7 +10,7 @@
 # Deliberately leaves your sliders, shortcut, and Preview state alone. The panel's own Reset button
 # already restores those, and settings tuned by feel are the one thing here that's expensive to recreate.
 set -e
-BUNDLE=com.inertia.Inertia
+BUNDLE=com.7thfrontier.Inertia
 
 # Relaunch whichever copy was running, not whichever one LaunchServices happens to prefer. During
 # development the installed /Applications copy and the repo build are different binaries, and reviving
