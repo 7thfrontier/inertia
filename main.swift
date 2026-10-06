@@ -121,10 +121,15 @@ func coastStep(pos: CGPoint, vel: CGVector, size: CGSize, bounds: CGRect, dt: Do
     // A window larger than the bounds makes max < min; pin such an axis at min instead of letting the
     // two clamps below fight each other (visible jitter between the two edges every frame).
     let maxX = max(bounds.maxX - size.width, bounds.minX), maxY = max(bounds.maxY - size.height, bounds.minY)
-    if p.x < bounds.minX { p.x = bounds.minX; v.dx = -v.dx * restitution }
-    if p.x > maxX        { p.x = maxX;        v.dx = -v.dx * restitution }
-    if p.y < bounds.minY { p.y = bounds.minY; v.dy = -v.dy * restitution }
-    if p.y > maxY        { p.y = maxY;        v.dy = -v.dy * restitution }
+    // Clamp only an edge the window was inside of at the start of this step. A drag can leave a window
+    // partly off screen (or under the menu bar); snapping it to the edge on release teleported it in a
+    // single frame. Instead it turns back toward the screen and glides in.
+    func wall(_ p: inout CGFloat, _ v: inout CGFloat, was: CGFloat, lo: CGFloat, hi: CGFloat) {
+        if p < lo { if was >= lo { p = lo; v = -v * restitution } else if v < 0 { v = -v * restitution } }
+        if p > hi { if was <= hi { p = hi; v = -v * restitution } else if v > 0 { v = -v * restitution } }
+    }
+    wall(&p.x, &v.dx, was: pos.x, lo: bounds.minX, hi: maxX)
+    wall(&p.y, &v.dy, was: pos.y, lo: bounds.minY, hi: maxY)
     return (p, v)
 }
 
@@ -277,6 +282,20 @@ func runSelfTest() {
                               dt: 0.05, tau: 0.05, restitution: 0.35)
     check(hypot(slow.dx, slow.dy) < hypot(100, 100), "a long frame must still decay velocity")
     check(massFactor(CGSize(width: 800, height: 600)) < massFactor(CGSize(width: 1600, height: 1200)), "mass must grow with area")
+    // 13b) released partly off screen: never jumps to the edge, turns back, and glides in. Both a flick
+    // further out (left) and a window parked under the menu bar (top) must move at most v·dt per step.
+    for (start, vel) in [(CGPoint(x: -300, y: 500), CGVector(dx: -2000, dy: 0)),
+                         (CGPoint(x: 400, y: -60), CGVector(dx: 0, dy: -800))] {
+        p = start; v = vel
+        for _ in 0..<Int(COAST_HZ * 5) {
+            let (np, nv) = coastStep(pos: p, vel: v, size: size, bounds: bounds, dt: dt, tau: 0.22, restitution: 0.35)
+            check(hypot(np.x - p.x, np.y - p.y) <= hypot(v.dx, v.dy) * dt + 0.001,
+                  "off-screen window jumped from \(p) to \(np)")
+            (p, v) = (np, nv)
+            if hypot(v.dx, v.dy) < 40 { break }
+        }
+        check(p.x >= start.x && p.y >= start.y, "off-screen window must head back on screen, ended at \(p)")
+    }
     // 14) the mark actually draws: the menu-bar icon must have ink, not be an empty template
     _ = NSApplication.shared                                     // views and images below need an app context
     let icon = Controller.menuBarIcon()
